@@ -8,10 +8,8 @@ import { AppLayout } from "@/components/AppLayout";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
 import Messages from "./pages/Messages";
-import ClientPortal from "./pages/ClientPortal";
 import SettingsPage from "./pages/SettingsPage";
 import AgencyLogin from "./pages/AgencyLogin";
-import ClientLogin from "./pages/ClientLogin";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -21,25 +19,12 @@ function ProtectedRoutes() {
 
   if (!user) return <Navigate to="/login" replace />;
 
-  if (user.role === "client") {
-    return (
-      <AppLayout>
-        <Routes>
-          <Route path="/client-portal" element={<ClientPortal />} />
-          <Route path="/messages" element={<Messages />} />
-          <Route path="*" element={<Navigate to="/client-portal" replace />} />
-        </Routes>
-      </AppLayout>
-    );
-  }
-
   return (
     <AppLayout>
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/messages" element={<Messages />} />
-        <Route path="/client-portal" element={<ClientPortal />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
@@ -53,7 +38,6 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <AgencyLogin />} />
-      <Route path="/client-login" element={user ? <Navigate to="/client-portal" replace /> : <ClientLogin />} />
       <Route path="/*" element={<ProtectedRoutes />} />
     </Routes>
   );

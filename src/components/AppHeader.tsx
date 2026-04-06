@@ -1,21 +1,20 @@
-import { Search, Bell } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { Bell } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Badge } from "@/components/ui/badge";
+import { GlobalSearch } from "./Globalsearch"; 
 
 export function AppHeader() {
   return (
-    <header className="h-14 flex items-center justify-between border-b border-border/50 px-4 bg-card/30 backdrop-blur-md">
+    // FIX: Added 'z-50 relative' to the header so it sits above all page content
+    <header className="relative z-50 h-14 flex items-center justify-between border-b border-border/50 px-4 bg-card/30 backdrop-blur-md">
       <div className="flex items-center gap-3">
         <SidebarTrigger />
-        <div className="relative w-72">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search projects, clients..."
-            className="pl-9 bg-secondary/50 border-border/50 text-sm h-9"
-          />
+        
+        <div className="w-72 relative"> 
+          <GlobalSearch />
         </div>
+
       </div>
       <div className="flex items-center gap-4">
         <button className="relative text-muted-foreground hover:text-foreground transition-colors">
@@ -26,7 +25,7 @@ export function AppHeader() {
         </button>
         <Avatar className="h-8 w-8 border border-border">
           <AvatarFallback className="bg-primary/20 text-primary text-xs font-semibold">
-            JD
+            VP
           </AvatarFallback>
         </Avatar>
       </div>

@@ -1,149 +1,287 @@
-import { useState } from "react";
-import { Send, Paperclip } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { useState, useEffect, useRef } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/contexts/AuthContext";
+import { Send, Paperclip, Hash, UserCircle } from "lucide-react";
+import { toast } from "sonner";
+import { format } from "date-fns";
 
-interface Thread {
+type ProjectThread = {
   id: string;
-  name: string;
-  initials: string;
-  lastMessage: string;
-  time: string;
-  unread: number;
-}
+  title: string;
+  client_id: string; // <-- Added so we can match it
+  client: { full_name: string } | null;
+};
 
-interface Message {
+type Message = {
   id: string;
-  sender: "agency" | "client";
-  name: string;
-  text: string;
-  time: string;
-}
-
-const threads: Thread[] = [
-  { id: "1", name: "Acme Corp", initials: "AC", lastMessage: "Can we schedule a review for the landing page?", time: "2m", unread: 3 },
-  { id: "2", name: "CloudNine Inc.", initials: "CN", lastMessage: "API docs have been shared.", time: "1h", unread: 1 },
-  { id: "3", name: "TechStart", initials: "TS", lastMessage: "Looks great! Approved.", time: "3h", unread: 0 },
-  { id: "4", name: "Finova", initials: "FN", lastMessage: "We need to discuss the dashboard layout.", time: "1d", unread: 0 },
-  { id: "5", name: "HealthTrack", initials: "HT", lastMessage: "Payment integration is live!", time: "2d", unread: 0 },
-];
-
-const messagesByThread: Record<string, Message[]> = {
-  "1": [
-    { id: "m1", sender: "client", name: "Acme Corp", text: "Hi! We've reviewed the initial mockups and love the direction.", time: "10:30 AM" },
-    { id: "m2", sender: "agency", name: "You", text: "That's great to hear! We've started implementing the hero section with the animated SVG backgrounds.", time: "10:35 AM" },
-    { id: "m3", sender: "client", name: "Acme Corp", text: "Perfect. Can we schedule a review for the landing page this Friday?", time: "10:38 AM" },
-    { id: "m4", sender: "agency", name: "You", text: "Absolutely. I'll send a calendar invite for 2 PM. We'll have the responsive version ready by then.", time: "10:40 AM" },
-    { id: "m5", sender: "client", name: "Acme Corp", text: "Can we also discuss the contact form integration? We want it connected to our CRM.", time: "10:42 AM" },
-  ],
-  "2": [
-    { id: "m1", sender: "agency", name: "You", text: "We've completed the API documentation. Sharing the link now.", time: "9:00 AM" },
-    { id: "m2", sender: "client", name: "CloudNine", text: "Received, thanks! We'll review and get back with questions.", time: "9:15 AM" },
-  ],
+  content: string;
+  created_at: string;
+  sender_id: string;
+  profiles: { full_name: string; role: string } | null;
 };
 
 export default function Messages() {
-  const [activeThread, setActiveThread] = useState("1");
-  const [inputValue, setInputValue] = useState("");
-  const messages = messagesByThread[activeThread] || [];
-  const activeThreadData = threads.find((t) => t.id === activeThread);
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const location = useLocation();
+  const navigate = useNavigate();
+  
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [newMessage, setNewMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // 1. Fetch available chat threads (Projects)
+  const { data: threads = [], isLoading: loadingThreads } = useQuery({
+    queryKey: ["chat-threads"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("projects")
+        // Added client_id to the select query
+        .select(`id, title, client_id, client:client_id(full_name)`);
+      if (error) throw error;
+      return (data || []) as any as ProjectThread[];
+    },
+  });
+
+  // --- NEW FEATURE: Handle incoming traffic from Global Search ---
+  useEffect(() => {
+    const handleNewClientChat = async () => {
+      const newClient = location.state?.newChatClient;
+      if (!newClient) return;
+
+      // Look for an existing thread for this client
+      const existingThread = threads.find(t => t.client_id === newClient.id);
+      
+      if (existingThread) {
+        // Chat exists, select it
+        setActiveProjectId(existingThread.id);
+      } else {
+        // No chat exists! Auto-create a "General Support" project to house the chat
+        const { data, error } = await supabase.from('projects').insert([{
+          title: 'General Support',
+          client_id: newClient.id,
+          status: 'active'
+        }]).select().single();
+
+        if (data) {
+          queryClient.invalidateQueries({ queryKey: ["chat-threads"] });
+          setActiveProjectId(data.id);
+          toast.success(`Created a new chat thread for ${newClient.company_name || newClient.full_name}`);
+        } else {
+          toast.error("Failed to create a new chat for this client.");
+        }
+      }
+      
+      // Clear the router state so this doesn't accidentally run again if they refresh
+      navigate(location.pathname, { replace: true });
+    };
+
+    if (!loadingThreads && location.state?.newChatClient) {
+      handleNewClientChat();
+    }
+  }, [location.state, threads, loadingThreads, navigate, queryClient]);
+  // -------------------------------------------------------------
+
+  // Set first thread as active by default if none selected and not coming from search
+  useEffect(() => {
+    if (threads.length > 0 && !activeProjectId && !location.state?.newChatClient) {
+      setActiveProjectId(threads[0].id);
+    }
+  }, [threads, activeProjectId, location.state]);
+
+  // 2. Fetch messages for the active thread
+  const { data: messages = [], isLoading: loadingMessages } = useQuery({
+    queryKey: ["messages", activeProjectId],
+    queryFn: async () => {
+      if (!activeProjectId) return [];
+      const { data, error } = await supabase
+        .from("messages")
+        .select(`id, content, created_at, sender_id, profiles(full_name, role)`)
+        .eq("project_id", activeProjectId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return data as Message[];
+    },
+    enabled: !!activeProjectId,
+  });
+
+  // 3. Set up Real-Time Subscription
+  useEffect(() => {
+    if (!activeProjectId) return;
+
+    const channel = supabase
+      .channel(`room:${activeProjectId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages', filter: `project_id=eq.${activeProjectId}` },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["messages", activeProjectId] });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [activeProjectId, queryClient]);
+
+  // Scroll to bottom when messages load/update
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // 4. Handle Sending a Message
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMessage.trim() || !activeProjectId || !user) return;
+
+    setSending(true);
+    try {
+      const { error } = await supabase.from("messages").insert([
+        {
+          project_id: activeProjectId,
+          sender_id: user.id,
+          content: newMessage.trim(),
+        },
+      ]);
+      if (error) throw error;
+      setNewMessage(""); 
+    } catch (error: any) {
+      toast.error("Failed to send message: " + error.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const activeThread = threads.find((t) => t.id === activeProjectId);
 
   return (
-    <div className="animate-fade-in h-[calc(100vh-5rem)]">
-      <div className="mb-4">
-        <h1 className="text-2xl font-bold tracking-tight">Messages</h1>
-        <p className="text-muted-foreground text-sm mt-1">Client communication hub</p>
-      </div>
-
-      <div className="glass-card flex h-[calc(100%-4rem)] overflow-hidden">
-        {/* Thread list */}
-        <div className="w-72 border-r border-border/50 flex flex-col">
-          <div className="p-3 border-b border-border/50">
-            <Input placeholder="Search conversations..." className="h-8 text-sm bg-secondary/50 border-border/50" />
-          </div>
-          <ScrollArea className="flex-1">
-            {threads.map((thread) => (
-              <button
-                key={thread.id}
-                onClick={() => setActiveThread(thread.id)}
-                className={`w-full p-3 flex items-start gap-3 text-left transition-colors hover:bg-secondary/50 ${
-                  activeThread === thread.id ? "bg-secondary/80" : ""
-                }`}
-              >
-                <Avatar className="h-9 w-9 shrink-0">
-                  <AvatarFallback className="text-xs bg-primary/15 text-primary">{thread.initials}</AvatarFallback>
-                </Avatar>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium truncate">{thread.name}</span>
-                    <span className="text-[10px] text-muted-foreground ml-2">{thread.time}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate mt-0.5">{thread.lastMessage}</p>
-                </div>
-                {thread.unread > 0 && (
-                  <Badge className="h-5 w-5 p-0 flex items-center justify-center text-[10px] shrink-0">
-                    {thread.unread}
-                  </Badge>
-                )}
-              </button>
-            ))}
-          </ScrollArea>
+    <div className="h-[calc(100vh-8rem)] flex flex-col md:flex-row gap-6 animate-fade-in">
+      
+      {/* Left Sidebar: Threads List */}
+      <div className="w-full md:w-80 flex flex-col bg-background border border-border/50 rounded-xl overflow-hidden glass-card">
+        <div className="p-4 border-b border-border/50 bg-accent/5">
+          <h2 className="font-semibold">Active Threads</h2>
         </div>
-
-        {/* Chat window */}
-        <div className="flex-1 flex flex-col">
-          <div className="p-3 border-b border-border/50 flex items-center gap-3">
-            <Avatar className="h-8 w-8">
-              <AvatarFallback className="text-xs bg-primary/15 text-primary">
-                {activeThreadData?.initials}
-              </AvatarFallback>
-            </Avatar>
-            <div>
-              <p className="text-sm font-medium">{activeThreadData?.name}</p>
-              <p className="text-[10px] text-muted-foreground">Online</p>
-            </div>
-          </div>
-
-          <ScrollArea className="flex-1 p-4">
-            <div className="space-y-4">
-              {messages.map((msg) => (
-                <div key={msg.id} className={`flex ${msg.sender === "agency" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[70%] rounded-lg px-4 py-2.5 ${
-                    msg.sender === "agency"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-secondary"
-                  }`}>
-                    <p className="text-sm">{msg.text}</p>
-                    <p className={`text-[10px] mt-1 ${
-                      msg.sender === "agency" ? "text-primary-foreground/60" : "text-muted-foreground"
-                    }`}>{msg.time}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </ScrollArea>
-
-          <div className="p-3 border-t border-border/50">
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground shrink-0">
-                <Paperclip className="h-4 w-4" />
-              </Button>
-              <Input
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                placeholder="Type a message..."
-                className="bg-secondary/50 border-border/50 text-sm"
-              />
-              <Button size="icon" className="shrink-0">
-                <Send className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
+        <div className="overflow-y-auto flex-1 p-2 space-y-1">
+          {threads.map((thread) => (
+            <button
+              key={thread.id}
+              onClick={() => setActiveProjectId(thread.id)}
+              className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors text-left ${
+                activeProjectId === thread.id
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-accent/10"
+              }`}
+            >
+              <Hash className="h-5 w-5 opacity-70" />
+              <div className="overflow-hidden">
+                <p className="font-medium truncate text-sm">{thread.title}</p>
+                <p className={`text-xs truncate ${activeProjectId === thread.id ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                  {thread.client?.full_name || "Internal Agency"}
+                </p>
+              </div>
+            </button>
+          ))}
+          {threads.length === 0 && (
+            <p className="text-sm text-muted-foreground text-center p-4">No active projects found.</p>
+          )}
         </div>
       </div>
+
+      {/* Right Area: Active Chat */}
+      <div className="flex-1 flex flex-col bg-background border border-border/50 rounded-xl overflow-hidden glass-card">
+        {/* Chat Header */}
+        <div className="p-4 border-b border-border/50 flex items-center justify-between bg-accent/5">
+          <div>
+            <h2 className="font-semibold text-lg">{activeThread?.title || "Select a thread"}</h2>
+            <p className="text-xs text-muted-foreground">Real-time client & team communication</p>
+          </div>
+        </div>
+
+        {/* Chat Messages */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {loadingMessages ? (
+             <div className="animate-pulse space-y-4">
+               {[1, 2, 3].map(i => <div key={i} className="h-16 bg-accent/10 rounded-lg max-w-md" />)}
+             </div>
+          ) : messages.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
+              <MessageSquare className="h-12 w-12 opacity-20 mb-4" />
+              <p>No messages yet. Start the conversation!</p>
+            </div>
+          ) : (
+            messages.map((msg) => {
+              const isMe = msg.sender_id === user?.id;
+              const isAgency = msg.profiles?.role?.includes("agency");
+
+              return (
+                <div key={msg.id} className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    {!isMe && <UserCircle className="h-4 w-4 text-muted-foreground" />}
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {msg.profiles?.full_name || "Unknown User"} 
+                      {!isMe && isAgency && " (Team)"}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/70">
+                      {format(new Date(msg.created_at), "h:mm a")}
+                    </span>
+                  </div>
+                  <div
+                    className={`max-w-[80%] p-3 rounded-2xl text-sm ${
+                      isMe
+                        ? "bg-primary text-primary-foreground rounded-tr-none"
+                        : "bg-accent/10 border border-border/50 rounded-tl-none"
+                    }`}
+                  >
+                    {msg.content}
+                  </div>
+                </div>
+              );
+            })
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Input Box */}
+        <div className="p-4 bg-background border-t border-border/50">
+          <form onSubmit={handleSendMessage} className="flex items-end gap-2">
+            <button
+              type="button"
+              className="p-3 text-muted-foreground hover:text-primary transition-colors bg-accent/5 rounded-xl border border-border/50"
+            >
+              <Paperclip className="h-5 w-5" />
+            </button>
+            <input
+              type="text"
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              placeholder="Type your message..."
+              className="flex-1 bg-accent/5 border border-border/50 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+              disabled={!activeProjectId || sending}
+            />
+            <button
+              type="submit"
+              disabled={!activeProjectId || !newMessage.trim() || sending}
+              className="p-3 bg-primary text-primary-foreground rounded-xl hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Send className="h-5 w-5" />
+            </button>
+          </form>
+        </div>
+      </div>
+      
     </div>
+  );
+}
+
+function MessageSquare({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+    </svg>
   );
 }

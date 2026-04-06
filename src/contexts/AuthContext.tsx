@@ -1,52 +1,56 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase";
+import { User } from "@supabase/supabase-js";
 
-type UserRole = "agency" | "client" | null;
+type AuthContextType = {
+  user: User | null;
+  loading: boolean;
+  signOut: () => Promise<void>;
+};
 
-interface AuthUser {
-  email: string;
-  role: UserRole;
-  name: string;
-}
+const AuthContext = createContext<AuthContextType>({ user: null, loading: true, signOut: async () => {} });
 
-interface AuthContextType {
-  user: AuthUser | null;
-  login: (email: string, password: string, role: UserRole) => boolean;
-  logout: () => void;
-}
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+  useEffect(() => {
+    // 1. Check for an existing session on the very first mount
+    const initAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setUser(session?.user ?? null);
+      setLoading(false); // Only stop loading AFTER the check is done
+    };
 
-// Mock users for demo
-const mockUsers = [
-  { email: "admin@agencyos.dev", password: "admin123", role: "agency" as const, name: "Admin" },
-  { email: "client@acme.com", password: "client123", role: "client" as const, name: "Acme Corp" },
-];
+    initAuth();
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
+    // 2. Listen for any changes (login, logout, token refresh)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
 
-  const login = (email: string, password: string, role: UserRole): boolean => {
-    const found = mockUsers.find(
-      (u) => u.email === email && u.password === password && u.role === role
-    );
-    if (found) {
-      setUser({ email: found.email, role: found.role, name: found.name });
-      return true;
-    }
-    return false;
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    window.location.href = '/login';
   };
 
-  const logout = () => setUser(null);
-
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
-      {children}
+    <AuthContext.Provider value={{ user, loading, signOut }}>
+      {/* This is the security guard: 
+        If loading is true, we show a spinner. 
+        The rest of the app (and its redirects) literally doesn't exist yet.
+      */}
+      {!loading ? children : (
+        <div className="h-screen w-screen flex items-center justify-center bg-[#09090b]">
+           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600"></div>
+        </div>
+      )}
     </AuthContext.Provider>
   );
 }
 
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
-}
+export const useAuth = () => useContext(AuthContext);

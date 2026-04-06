@@ -1,20 +1,41 @@
+// src/pages/Dashboard.tsx
+import { useQuery } from "@tanstack/react-query";
 import { FolderKanban, MessageSquare, Clock, ArrowUpRight } from "lucide-react";
-
-const metrics = [
-  { label: "Active Projects", value: "12", icon: FolderKanban, change: "+2 this week" },
-  { label: "Unread Messages", value: "8", icon: MessageSquare, change: "3 urgent" },
-];
-
-const activities = [
-  { time: "2 min ago", text: "Sarah pushed new designs for Acme Corp website", type: "update" as const },
-  { time: "1 hr ago", text: "Client approved Phase 2 deliverables for TechStart", type: "approval" as const },
-  { time: "3 hrs ago", text: "New message from CloudNine Inc. regarding API integration", type: "message" as const },
-  { time: "5 hrs ago", text: "Sprint review completed for Project Aurora", type: "update" as const },
-  { time: "Yesterday", text: "Milestone reached: Beta launch for HealthTrack app", type: "approval" as const },
-  { time: "Yesterday", text: "Alex added 3 new tasks to the Finova dashboard project", type: "update" as const },
-];
+import { supabase } from "@/lib/supabase";
+import { formatDistanceToNow } from "date-fns"; // already in your package.json
 
 export default function Dashboard() {
+  // Fetch active projects count
+  const { data: projectCount } = useQuery({
+    queryKey: ["active-projects"],
+    queryFn: async () => {
+      const { count } = await supabase
+        .from("projects")
+        .select("*", { count: "exact", head: true })
+        .eq("status", "active");
+      return count || 0;
+    },
+  });
+
+  // Fetch real activities
+  const { data: activities, isLoading } = useQuery({
+    queryKey: ["recent-activities"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("activities")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(6);
+      return data || [];
+    },
+  });
+
+  const metrics = [
+    { label: "Active Projects", value: projectCount?.toString() || "0", icon: FolderKanban, change: "Current workload" },
+    // Placeholder for messages until we build the messaging tables
+    { label: "Unread Messages", value: "0", icon: MessageSquare, change: "Requires attention" }, 
+  ];
+
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-fade-in">
       <div>
@@ -46,25 +67,37 @@ export default function Dashboard() {
             View all <ArrowUpRight className="h-3 w-3" />
           </button>
         </div>
-        <div className="space-y-0">
-          {activities.map((a, i) => (
-            <div key={i} className="flex gap-4 py-3 group">
-              <div className="flex flex-col items-center">
-                <div className={`h-2 w-2 rounded-full mt-2 ${
-                  a.type === "approval" ? "bg-success" : a.type === "message" ? "bg-primary" : "bg-accent"
-                }`} />
-                {i < activities.length - 1 && <div className="w-px flex-1 bg-border/50 mt-1" />}
-              </div>
-              <div className="flex-1 pb-1">
-                <p className="text-sm">{a.text}</p>
-                <div className="flex items-center gap-2 mt-1">
-                  <Clock className="h-3 w-3 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground">{a.time}</span>
+        
+        {isLoading ? (
+          <div className="animate-pulse space-y-4">
+            {[1, 2, 3].map(i => <div key={i} className="h-10 bg-accent/10 rounded" />)}
+          </div>
+        ) : (
+          <div className="space-y-0">
+            {activities?.map((a, i) => (
+              <div key={a.id} className="flex gap-4 py-3 group">
+                <div className="flex flex-col items-center">
+                  <div className={`h-2 w-2 rounded-full mt-2 ${
+                    a.type === "approval" ? "bg-success" : a.type === "message" ? "bg-primary" : "bg-accent"
+                  }`} />
+                  {i < activities.length - 1 && <div className="w-px flex-1 bg-border/50 mt-1" />}
+                </div>
+                <div className="flex-1 pb-1">
+                  <p className="text-sm">{a.text}</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <Clock className="h-3 w-3 text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground">
+                      {formatDistanceToNow(new Date(a.created_at), { addSuffix: true })}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+            {activities?.length === 0 && (
+              <p className="text-sm text-muted-foreground">No recent activity.</p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
