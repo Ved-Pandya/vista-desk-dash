@@ -2,7 +2,7 @@ import { Bell } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Badge } from "@/components/ui/badge";
-import { GlobalSearch } from "./Globalsearch"; 
+import { GlobalSearch } from "./GlobalSearch"; 
 
 export function AppHeader() {
   return (
